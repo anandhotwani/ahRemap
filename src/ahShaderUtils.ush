@@ -1,0 +1,207 @@
+#ifndef __AH_SHADER_UTILS__
+#define __AH_SHADER_UTILS__
+
+#include "Common.ush"
+
+float ahBias(float f, float bias)
+{
+	if (bias > 0.0f) return pow(f, log(bias) / log(0.5));
+	else return 0.0f;
+}
+
+float ahBiasAndGain(float input, float bias, float gain)
+{
+	if (input < 0.0f) return input;
+
+	if (bias != 0.5f)
+	{
+		input = ahBias(input, bias);
+	}
+
+	if (gain != 0.5f)
+	{
+		if (input < 0.5f) input = 0.5f * ahBias(2.0f * input, 1.0f - gain);
+		else input = 1.0f - ahBias(2.0f - 2.0f * input, 1.0f - gain) * 0.5f;
+	}
+
+	return input;
+
+}
+
+float ahClamp(float a, float mn, float mx)
+{
+	return min(max(a, mn), mx);
+}
+
+float ahLerp(float a, float b, float lerpValue)
+{
+	return a * (1 - lerpValue) + b * lerpValue;
+}
+
+float ahLuminance(float3 c)
+{
+	return c.x * 0.212671f + c.y * 0.715160f + c.z * 0.072169f;
+}
+
+// Adapted from Sony Imageworks OSL codebase for Unreal Engine compatibility //github.com/imageworks/OpenShadingLanguage/blob/master/src/
+float3 ahRgb2hsv(float3 rgb)
+{
+	float r = rgb.x;
+	float g = rgb.y;
+	float b = rgb.z;
+
+	float mincomp = min(r, min(g, b));
+	float maxcomp = max(r, max(g, b));
+
+	float delta = maxcomp - mincomp; // chroma value comp
+	//float h, s, v;
+	float h = 0;
+	float s = 0;
+	float v = 0;
+
+	v = maxcomp;
+
+	if (maxcomp > 0) s = delta / maxcomp;
+	else s = 0;
+
+	if (s <= 0) h = 0;
+	else {
+		if		(r >= maxcomp)	h = (g - b) / delta;
+		else if (g >= maxcomp)	h = 2 + (b - r) / delta;
+		else
+			h /= 6;
+		if (h < 0) h += 1;
+	}
+
+	return float3(h, s, v);
+
+}
+
+// Adapted from Sony Imageworks OSL codebase for Unreal Engine compatibility //github.com/imageworks/OpenShadingLanguage/blob/master/src/
+float3 ahHsv2rgb(float3 hsv)
+{
+	float h = hsv.x;
+	float s = hsv.y;
+	float v = hsv.z;
+
+	if (s < 0.0001f)
+	{
+		return float3(v, v, v);
+	}
+	else
+	{
+		h = 6.0f * (h - floor(h)); //expanding to 0 - 6 range
+		int hi = (int) h;
+		float f = h - hi;
+		float p = v * (1.0f - s);
+		float q = v * (1.0f - s * f);
+		float t = v * (1.0f - s * (1.0f - f));
+		switch (hi)
+		{
+			case 0: return float3(v, t, p);
+			case 1: return float3(q, v, p);
+			case 2: return float3(p, v, t);
+			case 3: return float3(p, q, v);
+			case 4: return float3(t, p, v);
+			default: return float3(v, p, q);
+		}
+	}
+}
+
+float ahContrast(float input, float contrast, float pivot)
+{
+	if (contrast == 1.f) return input;
+
+	return (input - pivot) * contrast + pivot;
+}
+
+
+float ahRemapFloat(float input, float inputMin, float inputMax, float contrastVal, float contrastPivot, float bias, float gain, float outputMin, float outputMax, bool clampEnable, bool threshold, float clampMin, float clampMax, float mask)
+{
+	if (mask > 0.0f)
+	{
+		float f = (input - inputMin) / (inputMax - inputMin);
+
+		f = ahContrast(f, contrastVal, contrastPivot);
+		f = ahBiasAndGain(f, bias, gain);
+		f = ahLerp(outputMin, outputMax, f);
+
+		if (clampEnable)
+		{
+			f = min(clampMax, f);
+			f = max(clampMin, f);
+			if (threshold)
+			{
+				f = (f - clampMin) / (clampMax - clampMin);
+			}
+		}
+
+		if (mask < 1.0f)
+		{
+			f = ahLerp(input, f, mask);
+		}
+
+		return f;
+	}
+
+	else return input;
+}
+
+float3 ahRemapColor(float3 input, float gamma, float saturation, float hueOffset, float contrastVal, float contrastPivot, float gain, float exposure, float mask)
+{
+	float3 result = input;
+
+	if (mask > 0.0f)
+	{
+		// gamma
+		if (gamma != 1.0f)
+		{
+			result.x = pow(abs(input.x), 1.0f / gamma);
+			result.y = pow(abs(input.y), 1.0f / gamma);
+			result.z = pow(abs(input.z), 1.0f / gamma);
+
+		}
+
+		// saturation
+		if (saturation != 1.0f)
+		{
+			float l = ahLuminance(result);
+			result.x = lerp(l, result.x, saturation);
+			result.y = lerp(l, result.y, saturation);
+			result.z = lerp(l, result.z, saturation);
+		}
+
+		// hue
+		if (hueOffset != 0.0f)
+		{
+			float3 hsv = ahRgb2hsv(result);
+			hsv.x += hueOffset;
+			result = ahHsv2rgb(hsv);
+		}
+
+		// contrast
+		if (contrastVal != 1.0)
+		{
+			result.x = (result.x - contrastPivot) * contrastVal + contrastPivot;
+			result.y = (result.y - contrastPivot) * contrastVal + contrastPivot;
+			result.z = (result.z - contrastPivot) * contrastVal + contrastPivot;
+		}
+
+		// gain and exposure
+		result.x = result.x * pow(2.0f, exposure) * gain;
+		result.y = result.y * pow(2.0f, exposure) * gain;
+		result.z = result.z * pow(2.0f, exposure) * gain;
+	}
+
+	if (mask < 1.0f)
+	{
+		result.x = lerp(input.x, result.x, mask);
+		result.y = lerp(input.y, result.y, mask);
+		result.z = lerp(input.z, result.z, mask);
+
+	}
+
+	return result;
+
+}
+#endif
